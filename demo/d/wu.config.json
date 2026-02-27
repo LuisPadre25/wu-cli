@@ -1,0 +1,57 @@
+{
+  "name": "d",
+  "version": "0.1.0",
+  "shell": {
+    "dir": "shell",
+    "port": 4321,
+    "framework": "html"
+  },
+  "apps": [
+    {
+      "name": "21",
+      "dir": "mf-21",
+      "framework": "react",
+      "port": 5001
+    },
+    {
+      "name": "fef",
+      "dir": "mf-fef",
+      "framework": "vue",
+      "port": 5002
+    },
+    {
+      "name": "k",
+      "dir": "mf-k",
+      "framework": "svelte",
+      "port": 5003
+    },
+    {
+      "name": "j",
+      "dir": "mf-j",
+      "framework": "solid",
+      "port": 5004
+    },
+    {
+      "name": "i",
+      "dir": "mf-i",
+      "framework": "preact",
+      "port": 5005
+    },
+    {
+      "name": "i6",
+      "dir": "mf-i6",
+      "framework": "lit",
+      "port": 5006
+    },
+    {
+      "name": "oo",
+      "dir": "mf-oo",
+      "framework": "vanilla",
+      "port": 5007
+    }
+  ],
+  "proxy": {
+    "port": 3000,
+    "open_browser": true
+  }
+}

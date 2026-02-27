@@ -1,0 +1,15 @@
+# Zig build artifacts
+zig-out/
+.zig-cache/
+*.exe
+*.pdb
+
+# Wu dev cache
+.wu-cache/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,19 @@
+{
+  "name": "wu-j",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5004",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "wu-framework": "^1.1.17",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0",
+    "vite-plugin-solid": "^2.11.0",
+    "babel-preset-solid": "^1.9.0",
+    "@babel/core": "^7.26.0"
+  }
+}

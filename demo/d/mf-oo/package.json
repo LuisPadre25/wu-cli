@@ -1,0 +1,15 @@
+{
+  "name": "wu-oo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5007",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "wu-framework": "^1.1.17"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

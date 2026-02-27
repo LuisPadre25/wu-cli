@@ -1,0 +1,16 @@
+{
+  "name": "wu-i6",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5006",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "wu-framework": "^1.1.17",
+    "lit": "^3.2.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
