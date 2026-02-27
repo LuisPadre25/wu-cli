@@ -1,5 +1,5 @@
 {
-  "name": "wu-cli",
+  "name": "@wu-framework/cli",
   "version": "0.1.0",
   "description": "Lightning-fast micro-frontend CLI — scaffold, develop, and build multi-framework apps",
   "license": "MIT",
@@ -35,5 +35,8 @@
   },
   "engines": {
     "node": ">=16"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

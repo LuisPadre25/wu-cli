@@ -20,18 +20,29 @@ Native Zig dev server and CLI toolkit for wu-framework microfrontend application
 - Auto-discovery of micro-apps from directory structure (no config required)
 - Framework support: React, Preact, Vue, Svelte, Solid, Lit, Angular, Vanilla JS
 
-## Quick Start
+## Install
 
 ```bash
-# Build the CLI
-zig build
+npm install -g @wu-framework/cli
+```
 
-# Create a new project interactively
-./zig-out/bin/wu create my-project
+Then use it anywhere:
 
-# Start development
+```bash
+wu create my-project
 cd my-project
 wu dev
+```
+
+### Build from source
+
+If you prefer to build from source (requires [Zig 0.15.2+](https://ziglang.org/download/)):
+
+```bash
+git clone https://github.com/LuisPadre25/wu-cli.git
+cd wu-cli
+zig build
+./zig-out/bin/wu create my-project
 ```
 
 ## Commands
@@ -127,13 +138,14 @@ Cache hits bypass all tiers entirely: the mtime of the source file is compared a
 
 ## Requirements
 
-- **Zig 0.15.2+** -- required for building and running the CLI
-- **Node.js 18+** -- only needed at runtime for Svelte, Vue, and Solid compilation (React/Preact use native Zig JSX)
+- **Node.js 16+** -- for installing via npm (`npm install -g @wu-framework/cli`)
+- **Node.js 18+** -- needed at runtime for Svelte, Vue, and Solid compilation (React/Preact use native Zig JSX)
+- **Zig 0.15.2+** -- only needed if building from source
 
 ## Project Stats
 
 - 22 Zig source files, ~2800 lines of runtime code
-- 1.6MB debug binary, zero external Zig dependencies
+- ~250-460KB release binary per platform (Windows, Linux, macOS x64/arm64), zero external Zig dependencies
 - Single-process architecture replaces 8+ simultaneous Vite dev servers
 - Part of the wu-framework microfrontend platform
 
