@@ -1,0 +1,40 @@
+#!/bin/bash
+#
+# Git hook: validate commit message format
+# Convention: <type>: <description>
+# Types: feat, fix, refactor, test, docs, chore
+#
+# Install: git config core.hooksPath .githooks
+
+MSG=$(head -1 "$1")
+
+# Allow merge commits
+if echo "$MSG" | grep -qE '^Merge '; then
+  exit 0
+fi
+
+# Validate format
+if ! echo "$MSG" | grep -qE '^(feat|fix|refactor|test|docs|chore): .{3,}'; then
+  echo ""
+  echo "  ERROR: Commit message does not follow the convention."
+  echo ""
+  echo "  Format:  <type>: <description>"
+  echo ""
+  echo "  Types:"
+  echo "    feat      New feature"
+  echo "    fix       Bug fix"
+  echo "    refactor  Code refactoring (no functional change)"
+  echo "    test      Add or update tests"
+  echo "    docs      Documentation"
+  echo "    chore     Maintenance, CI, dependencies"
+  echo ""
+  echo "  Examples:"
+  echo "    feat: add gzip compression for module responses"
+  echo "    fix: resolve cache invalidation on file rename"
+  echo "    docs: update README with new commands"
+  echo ""
+  echo "  Your message was:"
+  echo "    $MSG"
+  echo ""
+  exit 1
+fi
