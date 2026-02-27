@@ -1,8 +1,12 @@
 # Zig build artifacts
 zig-out/
 .zig-cache/
-*.exe
 *.pdb
+
+# Platform binaries (compiled by scripts/build-all.sh)
+bin/wu-win32-*
+bin/wu-linux-*
+bin/wu-darwin-*
 
 # Wu dev cache
 .wu-cache/

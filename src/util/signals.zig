@@ -21,11 +21,14 @@ pub fn install(shutdown_fn: ShutdownFn) void {
     } else {
         const act = std.posix.Sigaction{
             .handler = .{ .handler = posixSignalHandler },
-            .mask = std.posix.empty_sigset,
+            .mask = std.mem.zeroes(std.posix.sigset_t),
             .flags = 0,
         };
-        std.posix.sigaction(std.posix.SIG.INT, &act, null) catch {};
-        std.posix.sigaction(std.posix.SIG.TERM, &act, null) catch {};
+        // sigaction returns void on macOS, !void on Linux — comptime dispatch
+        const r1 = std.posix.sigaction(std.posix.SIG.INT, &act, null);
+        const r2 = std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+        if (@TypeOf(r1) != void) _ = r1 catch {};
+        if (@TypeOf(r2) != void) _ = r2 catch {};
     }
 }
 

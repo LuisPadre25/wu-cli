@@ -1,0 +1,39 @@
+{
+  "name": "wu-cli",
+  "version": "0.1.0",
+  "description": "Lightning-fast micro-frontend CLI — scaffold, develop, and build multi-framework apps",
+  "license": "MIT",
+  "bin": {
+    "wu": "bin/wu.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepublishOnly": "bash scripts/build-all.sh"
+  },
+  "keywords": [
+    "micro-frontend",
+    "microfrontend",
+    "cli",
+    "scaffold",
+    "dev-server",
+    "react",
+    "vue",
+    "svelte",
+    "solid",
+    "preact",
+    "lit",
+    "angular",
+    "astro"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LuisPadre25/wu-cli"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
