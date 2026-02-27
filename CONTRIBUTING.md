@@ -94,6 +94,16 @@ supports Accept-Encoding: gzip. Reduces transfer size ~70%.
 Co-Authored-By: Jose Padre <jose@example.com>
 ```
 
+## Setup inicial (una sola vez)
+
+Despues de clonar el repositorio, activar los git hooks para validacion automatica de commits:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Esto activa el hook `commit-msg` que rechaza commits que no sigan la convencion `<tipo>: <descripcion>`.
+
 ## Compilar y probar
 
 ```bash
