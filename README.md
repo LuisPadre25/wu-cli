@@ -53,7 +53,7 @@ zig build
 | `wu build` | Build all micro-apps in parallel |
 | `wu create` | Interactive project scaffolding (name, frameworks, install) |
 | `wu add <framework> <name>` | Add a new micro-app to an existing project |
-| `wu install` | Generate merged package.json and install dependencies |
+| `wu install` | Install project dependencies |
 | `wu info` | Show project configuration and status |
 | `wu serve` | Production server (coming soon) |
 
