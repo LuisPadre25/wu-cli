@@ -13,6 +13,7 @@ pub fn printUsage() void {
         \\    {s}serve{s}      Serve production build
         \\    {s}create{s}     Scaffold a new wu-framework project
         \\    {s}add{s}        Add a new micro-app to the project
+        \\    {s}install{s}    Install dependencies (alias: wu i)
         \\    {s}info{s}       Show project status and configuration
         \\
         \\  {s}Options:{s}
@@ -32,6 +33,7 @@ pub fn printUsage() void {
     , .{
         ansi.bold,    ansi.reset, ansi.cyan, ansi.reset,
         ansi.bold,    ansi.reset,
+        ansi.green,   ansi.reset,
         ansi.green,   ansi.reset,
         ansi.green,   ansi.reset,
         ansi.green,   ansi.reset,
