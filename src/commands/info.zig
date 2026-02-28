@@ -11,6 +11,7 @@ const root = @import("../main.zig");
 
 pub fn run(allocator: Allocator) !void {
     var cfg = config_mod.loadConfig(allocator);
+    defer cfg.deinit(allocator);
     const source: []const u8 = if (cfg.from_file) "wu.config.json" else blk: {
         cfg = discovery.discover(allocator);
         break :blk "auto-discovered";

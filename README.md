@@ -18,7 +18,7 @@ Native Zig dev server and CLI toolkit for wu-framework microfrontend application
 - HTTP keep-alive for connection reuse across requests
 - Interactive project scaffolding (`wu create`)
 - Auto-discovery of micro-apps from directory structure (no config required)
-- Framework support: React, Preact, Vue, Svelte, Solid, Lit, Angular, Vanilla JS
+- Framework support: React, Preact, Vue, Svelte, Solid, Lit, Angular, Alpine.js, Stencil, HTMX, Stimulus, Vanilla JS
 
 ## Install
 
@@ -116,7 +116,9 @@ src/
 .jsx/.tsx (Solid)        ----> Compiler Daemon ----> JS  (~10-50ms)
 .svelte                  ----> Compiler Daemon ----> JS  (~10-50ms)
 .vue                     ----> Compiler Daemon ----> JS  (~10-50ms)
+.ts   (Angular)          ----> esbuild bundle  ----> JS  (~10-50ms)
 .ts                      ----> TS Strip        ----> JS  (~0-1ms)
+.js   (Alpine/HTMX/etc)  ----> passthrough     ----> JS  (~0ms)
 ```
 
 The three tiers are tried in order. Native Zig handles React and Preact JSX with zero external processes. The Compiler Daemon keeps a long-running Node.js process for frameworks that require their own compilers (Svelte, Vue, Solid). If the daemon is unavailable, a one-shot `node -e` fallback is used.
@@ -132,9 +134,13 @@ Cache hits bypass all tiers entirely: the mtime of the source file is compared a
 | Vue | .vue | Daemon / Node | -- |
 | Svelte | .svelte | Daemon / Node | -- |
 | Solid.js | .jsx, .tsx | Daemon / Node | -- |
+| Angular | .ts | esbuild bundle | -- |
 | Lit | .ts, .js | TS strip only | -- |
+| Alpine.js | .js | Passthrough | -- |
+| Stencil | .js | Passthrough | -- |
+| HTMX | .js | Passthrough | -- |
+| Stimulus | .js | Passthrough | -- |
 | Vanilla | .js, .ts | TS strip only | -- |
-| Angular | .ts | TS strip only | -- |
 
 ## Requirements
 
@@ -146,7 +152,7 @@ Cache hits bypass all tiers entirely: the mtime of the source file is compared a
 
 - 22 Zig source files, ~2800 lines of runtime code
 - ~250-460KB release binary per platform (Windows, Linux, macOS x64/arm64), zero external Zig dependencies
-- Single-process architecture replaces 8+ simultaneous Vite dev servers
+- Single-process architecture replaces 12+ simultaneous Vite dev servers
 - Part of the wu-framework microfrontend platform
 
 ## License

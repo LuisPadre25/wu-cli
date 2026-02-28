@@ -45,6 +45,11 @@ pub const fw_preact = col("\x1b[35m"); // magenta
 pub const fw_lit = col("\x1b[34m"); // blue
 pub const fw_vanilla = col("\x1b[33m"); // yellow
 pub const fw_astro = col("\x1b[35m"); // magenta
+pub const fw_alpine = col("\x1b[36m"); // cyan (teal)
+pub const fw_qwik = col("\x1b[35m"); // magenta (purple)
+pub const fw_stencil = col("\x1b[34m"); // blue (indigo)
+pub const fw_htmx = col("\x1b[34m"); // blue
+pub const fw_stimulus = col("\x1b[32m"); // green (mint)
 
 pub fn frameworkColor(framework: []const u8) []const u8 {
     if (std.mem.eql(u8, framework, "react")) return fw_react;
@@ -56,6 +61,11 @@ pub fn frameworkColor(framework: []const u8) []const u8 {
     if (std.mem.eql(u8, framework, "lit")) return fw_lit;
     if (std.mem.eql(u8, framework, "vanilla")) return fw_vanilla;
     if (std.mem.eql(u8, framework, "astro")) return fw_astro;
+    if (std.mem.eql(u8, framework, "alpine")) return fw_alpine;
+    if (std.mem.eql(u8, framework, "qwik")) return fw_qwik;
+    if (std.mem.eql(u8, framework, "stencil")) return fw_stencil;
+    if (std.mem.eql(u8, framework, "htmx")) return fw_htmx;
+    if (std.mem.eql(u8, framework, "stimulus")) return fw_stimulus;
     return white;
 }
 

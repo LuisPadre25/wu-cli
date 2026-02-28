@@ -21,6 +21,7 @@ const http_parser = @import("http_parser.zig");
 const ws_proto = @import("ws_protocol.zig");
 const ansi = @import("../util/ansi.zig");
 const signals = @import("../util/signals.zig");
+const config_mod = @import("../config/config.zig");
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -55,6 +56,12 @@ pub const DevServer = struct {
     hmr_event_buf: [512]u8,
     hmr_event_len: usize,
 
+    // Hot-reload: live app list (updated when wu.config.json changes)
+    apps_mutex: std.Thread.Mutex,
+    live_apps: []const AppEntry,
+    _hot_cfgs: std.ArrayList(config_mod.WuConfig), // keeps old config memory alive
+    _hot_app_bufs: std.ArrayList([]AppEntry), // keeps old app entry slices alive
+
     pub fn init(allocator: Allocator, config: Config) DevServer {
         return .{
             .config = config,
@@ -65,7 +72,67 @@ pub const DevServer = struct {
             .hmr_mutex = .{},
             .hmr_event_buf = undefined,
             .hmr_event_len = 0,
+            .apps_mutex = .{},
+            .live_apps = config.apps,
+            ._hot_cfgs = .empty,
+            ._hot_app_bufs = .empty,
         };
+    }
+
+    /// Get current live app list (thread-safe)
+    fn getApps(self: *DevServer) []const AppEntry {
+        self.apps_mutex.lock();
+        defer self.apps_mutex.unlock();
+        return self.live_apps;
+    }
+
+    /// Reload app list from wu.config.json (called by watcher thread)
+    fn reloadApps(self: *DevServer) void {
+        var cfg = config_mod.loadConfig(self.allocator);
+        if (!cfg.from_file) {
+            cfg.deinit(self.allocator);
+            std.debug.print("  {s}[config]{s} could not parse wu.config.json — skipping reload\n", .{
+                ansi.dim, ansi.reset,
+            });
+            return;
+        }
+
+        // Build new AppEntry list (filter missing dirs + dedup)
+        var new_apps: std.ArrayList(AppEntry) = .empty;
+        for (cfg.apps) |app| {
+            std.fs.cwd().access(app.dir, .{}) catch continue;
+            var dup = false;
+            for (new_apps.items) |existing| {
+                if (std.mem.eql(u8, existing.dir, app.dir)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+            new_apps.append(self.allocator, .{
+                .name = app.name,
+                .dir = app.dir,
+                .framework = app.framework,
+                .port = app.port,
+            }) catch continue;
+        }
+
+        const new_slice = new_apps.toOwnedSlice(self.allocator) catch return;
+
+        // Swap under lock — keep old memory alive (strings point into old cfgs)
+        self.apps_mutex.lock();
+        self.live_apps = new_slice;
+        self.apps_mutex.unlock();
+
+        // Store cfg and app buf to keep memory alive until shutdown
+        self._hot_cfgs.append(self.allocator, cfg) catch {
+            cfg.deinit(self.allocator);
+        };
+        self._hot_app_bufs.append(self.allocator, new_slice) catch {};
+
+        std.debug.print("  {s}[config]{s} reloaded — {d} app(s) active\n", .{
+            ansi.green, ansi.reset, new_slice.len,
+        });
     }
 
     /// Start the dev server. Blocks until shutdown.
@@ -238,11 +305,49 @@ pub const DevServer = struct {
             return sendResponse(stream, 200, "application/javascript; charset=utf-8", wu_hmr_client);
         }
 
+        // 3b. Dynamic app list endpoint — shell reads this to build UI
+        if (std.mem.eql(u8, path, "/@wu/apps.json")) {
+            return self.serveAppsJson(stream);
+        }
+
         // Normalize: strip leading slash (/ → "", /shell/main.js → "shell/main.js")
         const relative = if (path.len > 0 and path[0] == '/') path[1..] else path;
 
+        // 3c. wu.json manifest requests — wu.init() fetches /<app>/wu.json
+        //     1. Serve from disk if the file exists.
+        //     2. Otherwise auto-generate a default manifest for registered apps
+        //        so wu-framework gets a 200 (no console 404 noise).
+        //     3. For unknown paths, return a clean 404 JSON.
+        if (std.mem.endsWith(u8, relative, "/wu.json")) {
+            const cwd = std.fs.cwd();
+            // Try disk first
+            if (cwd.openFile(relative, .{})) |file| {
+                defer file.close();
+                const contents = file.readToEndAlloc(self.allocator, 512 * 1024) catch {
+                    return sendResponse(stream, 500, "application/json", "{\"error\":\"read_error\"}");
+                };
+                defer self.allocator.free(contents);
+                return sendResponse(stream, 200, "application/json", contents);
+            } else |_| {}
+            // No file on disk — check if it matches a registered app and auto-generate
+            const app_dir = relative[0 .. relative.len - "/wu.json".len];
+            for (self.getApps()) |app| {
+                if (std.mem.eql(u8, app_dir, app.dir)) {
+                    var mbuf: [512]u8 = undefined;
+                    const ext = fwMainExt(app.framework);
+                    const manifest = std.fmt.bufPrint(&mbuf,
+                        \\{{"name":"{s}","entry":"src/main.{s}","styleMode":"shared","wu":{{"exports":{{}},"imports":[],"routes":[],"permissions":[]}}}}
+                    , .{ app.name, ext }) catch {
+                        return sendResponse(stream, 500, "application/json", "{\"error\":\"format_error\"}");
+                    };
+                    return sendResponse(stream, 200, "application/json", manifest);
+                }
+            }
+            return sendResponse(stream, 404, "application/json", "{\"error\":\"not_found\"}");
+        }
+
         // 4. Match micro-app directories (exact prefix + '/' boundary)
-        for (self.config.apps) |app| {
+        for (self.getApps()) |app| {
             if (std.mem.startsWith(u8, relative, app.dir) and
                 (relative.len == app.dir.len or relative[app.dir.len] == '/'))
             {
@@ -298,7 +403,11 @@ pub const DevServer = struct {
         // Cache hit? Serve directly — skip the 200-400ms node spawn
         if (self.compile_cache.get(path, mtime)) |cached| {
             defer self.allocator.free(cached);
-            return sendResponse(stream, 200, "application/javascript; charset=utf-8", cached);
+            // Stamp relative imports with version to bust browser module cache
+            const version = self.reload_counter.load(.acquire);
+            const versioned = versionRelativeImports(self.allocator, cached, version) catch cached;
+            defer if (versioned.ptr != cached.ptr) self.allocator.free(versioned);
+            return sendResponse(stream, 200, "application/javascript; charset=utf-8", versioned);
         }
 
         // Cache miss — read source and compile
@@ -329,10 +438,15 @@ pub const DevServer = struct {
         const r_owned = rewritten.ptr != compiled.ptr;
         defer if (r_owned) self.allocator.free(rewritten);
 
-        // Store the final result in cache (import-rewritten version)
+        // Store the final result in cache (version-free for reuse)
         self.compile_cache.put(path, mtime, rewritten);
 
-        return sendResponse(stream, 200, "application/javascript; charset=utf-8", rewritten);
+        // Stamp relative imports with version to bust browser module cache
+        const version = self.reload_counter.load(.acquire);
+        const versioned = versionRelativeImports(self.allocator, rewritten, version) catch rewritten;
+        defer if (versioned.ptr != rewritten.ptr) self.allocator.free(versioned);
+
+        return sendResponse(stream, 200, "application/javascript; charset=utf-8", versioned);
     }
 
     fn serveShellFile(self: *DevServer, stream: std.net.Stream, relative: []const u8) !void {
@@ -385,6 +499,49 @@ pub const DevServer = struct {
         };
     }
 
+    fn serveAppsJson(self: *DevServer, stream: std.net.Stream) !void {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        const w = buf.writer(self.allocator);
+        try w.writeAll("[");
+        const live = self.getApps();
+        for (live, 0..) |app, i| {
+            if (i > 0) try w.writeAll(",");
+            const color = fwColor(app.framework);
+            const ext = mainExt(app.framework);
+            try w.print(
+                \\{{"name":"{s}","dir":"{s}","framework":"{s}","color":"{s}","ext":"{s}"}}
+            , .{ app.name, app.dir, app.framework, color, ext });
+        }
+        try w.writeAll("]");
+        return sendResponse(stream, 200, "application/json; charset=utf-8", buf.items);
+    }
+
+    fn fwColor(framework: []const u8) []const u8 {
+        const eql = std.mem.eql;
+        if (eql(u8, framework, "react")) return "#61dafb";
+        if (eql(u8, framework, "vue")) return "#42b883";
+        if (eql(u8, framework, "svelte")) return "#ff3e00";
+        if (eql(u8, framework, "solid")) return "#4f88c6";
+        if (eql(u8, framework, "preact")) return "#673ab8";
+        if (eql(u8, framework, "lit")) return "#325ccc";
+        if (eql(u8, framework, "vanilla")) return "#f7df1e";
+        if (eql(u8, framework, "angular")) return "#dd0031";
+        if (eql(u8, framework, "alpine")) return "#77c1d2";
+        if (eql(u8, framework, "qwik")) return "#ac7ef4";
+        if (eql(u8, framework, "stencil")) return "#4c48ff";
+        if (eql(u8, framework, "htmx")) return "#3366cc";
+        if (eql(u8, framework, "stimulus")) return "#77e8b9";
+        return "#888";
+    }
+
+    fn mainExt(framework: []const u8) []const u8 {
+        const eql = std.mem.eql;
+        if (eql(u8, framework, "react") or eql(u8, framework, "solid") or eql(u8, framework, "preact") or eql(u8, framework, "qwik")) return "jsx";
+        if (eql(u8, framework, "angular")) return "ts";
+        return "js";
+    }
+
     fn serveFileFromDisk(self: *DevServer, stream: std.net.Stream, cwd: std.fs.Dir, path: []const u8) !void {
         const file = try cwd.openFile(path, .{});
         defer file.close();
@@ -401,16 +558,23 @@ pub const DevServer = struct {
             const transformed = transform.transformSource(self.allocator, contents, path) catch contents;
             const owned = transformed.ptr != contents.ptr;
             defer if (owned) self.allocator.free(transformed);
-            try sendResponse(stream, 200, ct, transformed);
+            // Stamp relative imports with version to bust browser module cache
+            const version = self.reload_counter.load(.acquire);
+            const versioned = versionRelativeImports(self.allocator, transformed, version) catch transformed;
+            defer if (versioned.ptr != transformed.ptr) self.allocator.free(versioned);
+            try sendResponse(stream, 200, ct, versioned);
             return;
         }
 
-        // Inject HMR client into HTML files
+        // Inject HMR client + app data into HTML files
         if (std.mem.eql(u8, ext, ".html") or std.mem.eql(u8, ext, ".htm")) {
-            const injected = self.injectHmrScript(contents) catch contents;
-            const owned = injected.ptr != contents.ptr;
-            defer if (owned) self.allocator.free(injected);
-            try sendResponse(stream, 200, ct, injected);
+            const with_hmr = self.injectHmrScript(contents) catch contents;
+            const hmr_owned = with_hmr.ptr != contents.ptr;
+            defer if (hmr_owned) self.allocator.free(with_hmr);
+            const with_apps = self.injectAppsData(with_hmr) catch with_hmr;
+            const apps_owned = with_apps.ptr != with_hmr.ptr;
+            defer if (apps_owned) self.allocator.free(with_apps);
+            try sendResponse(stream, 200, ct, with_apps);
             return;
         }
 
@@ -449,8 +613,7 @@ pub const DevServer = struct {
 
         try out.appendSlice(self.allocator,
             \\(function() {
-            \\  const style = document.createElement('style');
-            \\  style.setAttribute('data-wu-css', '
+            \\  var id = '
         );
         // Append escaped file path as attribute value for HMR targeting
         for (relative) |c| {
@@ -459,14 +622,20 @@ pub const DevServer = struct {
             }
             try out.append(self.allocator, c);
         }
-        try out.appendSlice(self.allocator, "');\n  style.textContent = ");
+        try out.appendSlice(self.allocator, "';\n" ++
+            "  var style = document.querySelector('style[data-wu-css=\"' + id + '\"]');\n" ++
+            "  if (!style) {\n" ++
+            "    style = document.createElement('style');\n" ++
+            "    style.setAttribute('data-wu-css', id);\n" ++
+            "    document.head.appendChild(style);\n" ++
+            "  }\n" ++
+            "  style.textContent = ");
 
         // JSON-encode the CSS content (handle quotes, newlines, etc.)
         try appendJsString(self.allocator, &out, css);
 
         try out.appendSlice(self.allocator,
             \\;
-            \\  document.head.appendChild(style);
             \\})();
             \\
         );
@@ -509,7 +678,7 @@ pub const DevServer = struct {
         // Build search directories: all app dirs + shell dir + project root
         var search_dirs_buf: [32][]const u8 = undefined;
         var search_count: usize = 0;
-        for (self.config.apps) |app| {
+        for (self.getApps()) |app| {
             if (search_count < search_dirs_buf.len) {
                 search_dirs_buf[search_count] = app.dir;
                 search_count += 1;
@@ -924,31 +1093,100 @@ pub const DevServer = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
+    /// Inject window.__wu_apps JSON into HTML so main.js doesn't need fetch()
+    fn injectAppsData(self: *DevServer, html: []const u8) ![]const u8 {
+        // Build JSON array of apps
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+        const jw = json.writer(self.allocator);
+        try jw.writeAll("\n<script>window.__wu_apps=");
+        try jw.writeAll("[");
+        const live = self.getApps();
+        for (live, 0..) |app, i| {
+            if (i > 0) try jw.writeAll(",");
+            const color = fwColor(app.framework);
+            const ext = mainExt(app.framework);
+            try jw.print(
+                \\{{"name":"{s}","dir":"{s}","framework":"{s}","color":"{s}","ext":"{s}"}}
+            , .{ app.name, app.dir, app.framework, color, ext });
+        }
+        try jw.writeAll("];</script>\n");
+
+        // Inject before </head> or before first <script
+        const anchor = std.mem.indexOf(u8, html, "</head>") orelse
+            std.mem.indexOf(u8, html, "<script") orelse
+            return error.NoInjectionPoint;
+
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, html[0..anchor]);
+        try out.appendSlice(self.allocator, json.items);
+        try out.appendSlice(self.allocator, html[anchor..]);
+        return out.toOwnedSlice(self.allocator);
+    }
+
     // ── File Watcher ────────────────────────────────────────────────────────
 
     fn watcherThread(self: *DevServer) void {
-        // Fixed-size mtime cache: hash(path) → mtime
+        // Fixed-size mtime cache: hash(path) → mtime + generation
         const MAX_ENTRIES = 4096;
         var entries: [MAX_ENTRIES]WatchEntry = undefined;
         var entry_count: usize = 0;
+        var generation: u32 = 0;
+
+        // Track wu.config.json mtime for live config changes
+        var config_mtime: i128 = 0;
+        var first_scan = true;
+        // Debounce: wait for config to stabilize before reading
+        // (wu add writes config + runs npm install — file may be written in stages)
+        var config_pending_reload = false;
+        var config_debounce: u8 = 0;
 
         // Delay first scan to let server start
         std.Thread.sleep(500 * std.time.ns_per_ms);
 
         while (self.running.load(.acquire)) {
+            generation +%= 1;
             var apps_changed: usize = 0;
             var shell_changed = false;
+            var files_deleted = false;
             var last_app_name: []const u8 = "";
             var last_app_dir: []const u8 = "";
             var last_app_fw: []const u8 = "";
             var changed_ext: [16]u8 = undefined;
             var changed_ext_len: usize = 0;
 
-            // Scan each app directory
-            for (self.config.apps) |app| {
+            // Check if wu.config.json changed (app added/removed)
+            {
+                const stat = std.fs.cwd().statFile("wu.config.json") catch null;
+                if (stat) |s| {
+                    if (s.mtime != config_mtime) {
+                        config_mtime = s.mtime;
+                        if (!first_scan) {
+                            // Config changed — start debounce (wait for file to stabilize)
+                            config_pending_reload = true;
+                            config_debounce = 0;
+                        }
+                    } else if (config_pending_reload) {
+                        // mtime stable this cycle — count debounce ticks
+                        config_debounce += 1;
+                        if (config_debounce >= 5) { // 5 cycles × 100ms = 500ms stable
+                            config_pending_reload = false;
+                            self.reloadApps(); // re-read config, swap live app list
+                            shell_changed = true; // trigger full reload
+                            std.debug.print("  {s}[hmr]{s} wu.config.json changed → full reload\n", .{
+                                ansi.cyan, ansi.reset,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Scan each app directory (use live list — may have been updated by reloadApps)
+            for (self.getApps()) |app| {
                 var ext_buf: [16]u8 = undefined;
                 var ext_len: usize = 0;
-                if (scanDir(app.dir, &entries, &entry_count, MAX_ENTRIES, &ext_buf, &ext_len)) {
+                if (scanDir(app.dir, &entries, &entry_count, MAX_ENTRIES, &ext_buf, &ext_len, generation)) {
                     apps_changed += 1;
                     last_app_name = app.name;
                     last_app_dir = app.dir;
@@ -963,17 +1201,40 @@ pub const DevServer = struct {
             if (self.config.shell_dir.len > 0) {
                 var ext_buf: [16]u8 = undefined;
                 var ext_len: usize = 0;
-                if (scanDir(self.config.shell_dir, &entries, &entry_count, MAX_ENTRIES, &ext_buf, &ext_len)) {
+                if (scanDir(self.config.shell_dir, &entries, &entry_count, MAX_ENTRIES, &ext_buf, &ext_len, generation)) {
                     shell_changed = true;
                 }
             }
 
-            if (apps_changed > 0 or shell_changed) {
+            // Detect deleted files: entries with stale generation were not seen this cycle
+            {
+                var i: usize = 0;
+                while (i < entry_count) {
+                    if (entries[i].generation != generation) {
+                        // File was deleted — remove entry by swapping with last
+                        files_deleted = true;
+                        entry_count -= 1;
+                        if (i < entry_count) {
+                            entries[i] = entries[entry_count];
+                        }
+                        // don't increment i — check the swapped entry
+                    } else {
+                        i += 1;
+                    }
+                }
+                if (files_deleted) {
+                    std.debug.print("  {s}[hmr]{s} file(s) deleted → full reload\n", .{
+                        ansi.cyan, ansi.reset,
+                    });
+                }
+            }
+
+            if (apps_changed > 0 or shell_changed or files_deleted) {
                 // Format the SSE event for the HMR handler
                 var event_buf: [512]u8 = undefined;
                 var event_len: usize = 0;
 
-                if (!shell_changed and apps_changed == 1) {
+                if (!shell_changed and !files_deleted and apps_changed == 1) {
                     const ext_slice = changed_ext[0..changed_ext_len];
                     if (std.mem.eql(u8, ext_slice, ".css")) {
                         // CSS-only change → hot inject (no page reload)
@@ -1012,48 +1273,85 @@ pub const DevServer = struct {
                 _ = self.reload_counter.fetchAdd(1, .release);
             }
 
-            std.Thread.sleep(300 * std.time.ns_per_ms);
+            first_scan = false;
+            std.Thread.sleep(100 * std.time.ns_per_ms);
         }
     }
 
-    fn scanDir(dir_name: []const u8, entries: []WatchEntry, count: *usize, max: usize, ext_out: *[16]u8, ext_out_len: *usize) bool {
+    fn scanDir(dir_name: []const u8, entries: []WatchEntry, count: *usize, max: usize, ext_out: *[16]u8, ext_out_len: *usize, generation: u32) bool {
         var changed = false;
 
-        // Scan src/ subdirectory (where source files live)
-        const subdirs = [_][]const u8{ "src", "." };
-        for (subdirs) |sub| {
-            var path_buf: [512]u8 = undefined;
-            const scan_path = if (std.mem.eql(u8, sub, "."))
-                dir_name
-            else
-                std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_name, sub }) catch continue;
+        // Stack-based recursive traversal (no allocator needed)
+        const max_depth = 16;
+        var stack: [max_depth]std.fs.Dir = undefined;
+        var stack_iters: [max_depth]std.fs.Dir.Iterator = undefined;
+        var stack_paths: [max_depth][512]u8 = undefined;
+        var stack_path_lens: [max_depth]usize = undefined;
+        var depth: usize = 0;
 
-            var dir = std.fs.cwd().openDir(scan_path, .{ .iterate = true }) catch continue;
-            defer dir.close();
+        // Push root directory
+        stack[0] = std.fs.cwd().openDir(dir_name, .{ .iterate = true }) catch return false;
+        stack_iters[0] = stack[0].iterate();
+        const root_len = @min(dir_name.len, stack_paths[0].len);
+        @memcpy(stack_paths[0][0..root_len], dir_name[0..root_len]);
+        stack_path_lens[0] = root_len;
 
-            var it = dir.iterate();
-            while (it.next() catch null) |entry| {
+        while (true) {
+            // Try to get next entry at current depth
+            const entry_opt = stack_iters[depth].next() catch null;
+
+            if (entry_opt) |entry| {
+                if (entry.kind == .directory) {
+                    // Skip known non-source directories
+                    if (isSkippedDir(entry.name)) continue;
+                    if (depth + 1 >= max_depth) continue;
+
+                    // Build path for subdirectory
+                    const parent_len = stack_path_lens[depth];
+                    const name_len = entry.name.len;
+                    const child_len = parent_len + 1 + name_len;
+                    if (child_len > stack_paths[0].len) continue;
+
+                    var child_path: *[512]u8 = &stack_paths[depth + 1];
+                    @memcpy(child_path[0..parent_len], stack_paths[depth][0..parent_len]);
+                    child_path[parent_len] = '/';
+                    @memcpy(child_path[parent_len + 1 .. child_len], entry.name);
+                    stack_path_lens[depth + 1] = child_len;
+
+                    // Open subdirectory and push onto stack
+                    const sub_dir = stack[depth].openDir(entry.name, .{ .iterate = true }) catch continue;
+                    depth += 1;
+                    stack[depth] = sub_dir;
+                    stack_iters[depth] = stack[depth].iterate();
+                    continue;
+                }
+
                 if (entry.kind != .file) continue;
 
                 // Only watch source files
                 const ext = std.fs.path.extension(entry.name);
                 if (!isWatchedExtension(ext)) continue;
 
-                // Get mtime via stat
-                const file = dir.openFile(entry.name, .{}) catch continue;
-                defer file.close();
-                const stat = file.stat() catch continue;
+                // Get mtime via stat (no file handle — faster on Windows)
+                const stat = stack[depth].statFile(entry.name) catch continue;
                 const mtime = stat.mtime;
 
-                // Hash the full path for lookup
+                // Build full path for hashing
+                const parent_len = stack_path_lens[depth];
+                const name_len = entry.name.len;
+                const full_len = parent_len + 1 + name_len;
                 var full_path_buf: [1024]u8 = undefined;
-                const full_path = std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ scan_path, entry.name }) catch continue;
-                const hash = std.hash.Wyhash.hash(0, full_path);
+                if (full_len > full_path_buf.len) continue;
+                @memcpy(full_path_buf[0..parent_len], stack_paths[depth][0..parent_len]);
+                full_path_buf[parent_len] = '/';
+                @memcpy(full_path_buf[parent_len + 1 .. full_len], entry.name);
+                const hash = std.hash.Wyhash.hash(0, full_path_buf[0..full_len]);
 
                 // Check if mtime changed
                 var found = false;
                 for (entries[0..count.*]) |*e| {
                     if (e.hash == hash) {
+                        e.generation = generation;
                         if (e.mtime != mtime) {
                             e.mtime = mtime;
                             changed = true;
@@ -1068,10 +1366,14 @@ pub const DevServer = struct {
                 }
 
                 if (!found and count.* < max) {
-                    entries[count.*] = .{ .hash = hash, .mtime = mtime };
+                    entries[count.*] = .{ .hash = hash, .mtime = mtime, .generation = generation };
                     count.* += 1;
-                    // First scan — don't trigger reload
                 }
+            } else {
+                // No more entries at this depth — pop
+                stack[depth].close();
+                if (depth == 0) break;
+                depth -= 1;
             }
         }
 
@@ -1086,6 +1388,15 @@ pub const DevServer = struct {
             eql(u8, ext, ".astro") or eql(u8, ext, ".mjs");
     }
 
+    fn isSkippedDir(name: []const u8) bool {
+        const eql = std.mem.eql;
+        return eql(u8, name, "node_modules") or eql(u8, name, "dist") or
+            eql(u8, name, ".git") or eql(u8, name, ".svelte-kit") or
+            eql(u8, name, ".next") or eql(u8, name, ".nuxt") or
+            eql(u8, name, "build") or eql(u8, name, "coverage") or
+            eql(u8, name, ".claude");
+    }
+
     // ── HTTP Helpers ────────────────────────────────────────────────────────
 
     fn sendResponse(stream: std.net.Stream, status: u16, content_type: []const u8, body: []const u8) !void {
@@ -1095,7 +1406,7 @@ pub const DevServer = struct {
             "HTTP/1.1 {d} {s}\r\n" ++
                 "Content-Type: {s}\r\n" ++
                 "Content-Length: {d}\r\n" ++
-                "Cache-Control: no-cache\r\n" ++
+                "Cache-Control: no-store\r\n" ++
                 "Access-Control-Allow-Origin: *\r\n" ++
                 "Access-Control-Allow-Methods: GET, OPTIONS\r\n" ++
                 "Access-Control-Allow-Headers: *\r\n" ++
@@ -1146,6 +1457,16 @@ pub const DevServer = struct {
         };
     }
 };
+
+// ── Framework Helpers ───────────────────────────────────────────────────────
+
+/// Map framework name to its main entry-point extension (mirrors create.zig mainExt).
+fn fwMainExt(framework: []const u8) []const u8 {
+    const eql = std.mem.eql;
+    if (eql(u8, framework, "react") or eql(u8, framework, "solid") or eql(u8, framework, "preact") or eql(u8, framework, "qwik")) return "jsx";
+    if (eql(u8, framework, "angular")) return "ts";
+    return "js";
+}
 
 // ── CJS Detection Helpers ───────────────────────────────────────────────────
 
@@ -1692,7 +2013,7 @@ const wu_hmr_client =
     \\// WU HMR Client — WebSocket first, SSE fallback
     \\(function() {
     \\  var connected = false;
-    \\  var fwExts = {svelte:'svelte',react:'jsx',vue:'js',solid:'jsx',preact:'jsx',lit:'js',vanilla:'js',angular:'ts'};
+    \\  var fwExts = {svelte:'svelte',react:'jsx',vue:'js',solid:'jsx',preact:'jsx',lit:'js',vanilla:'js',angular:'ts',alpine:'js',qwik:'jsx',stencil:'js',htmx:'js',stimulus:'js'};
     \\
     \\  function onMessage(data) {
     \\    if (data.type === 'connected') {
@@ -1758,6 +2079,14 @@ const wu_hmr_client =
     \\        l.href = l.href.split('?')[0] + t;
     \\      });
     \\    });
+    \\    document.querySelectorAll('style[data-wu-css]').forEach(function(s) {
+    \\      var p = s.getAttribute('data-wu-css');
+    \\      fetch('/' + p + '?raw&t=' + Date.now()).then(function(r) {
+    \\        return r.text();
+    \\      }).then(function(css) {
+    \\        s.textContent = css;
+    \\      });
+    \\    });
     \\    console.log('%c[wu] css updated → ' + appName, 'color: #7c3aed');
     \\  }
     \\
@@ -1768,31 +2097,158 @@ const wu_hmr_client =
     \\      entry = '/' + dir + '/src/main.' + (fwExts[fw] || 'js');
     \\    }
     \\    if (!wu || !entry) { location.reload(); return; }
-    \\    var container = document.getElementById('wu-app-' + appName);
-    \\    var def = wu.definitions && wu.definitions.get(appName);
-    \\    if (def && def.unmount && container) {
-    \\      try { def.unmount(container); } catch(e) {}
+    \\    if (typeof wu.unmount === 'function') {
+    \\      Promise.resolve()
+    \\        .then(function() { return wu.unmount(appName, { force: true }); })
+    \\        .catch(function() {})
+    \\        .then(function() {
+    \\          wu.definitions.delete(appName);
+    \\          if (wu.sandbox && wu.sandbox.sandboxes) wu.sandbox.sandboxes.delete(appName);
+    \\          wu.mounted.delete(appName);
+    \\          return import(entry + '?t=' + Date.now());
+    \\        })
+    \\        .then(function() {
+    \\          return wu.mount(appName, '#wu-app-' + appName);
+    \\        })
+    \\        .then(function() {
+    \\          console.log('%c[wu] ' + appName + ' hot-reloaded', 'color: #7c3aed');
+    \\        })
+    \\        .catch(function(err) {
+    \\          console.warn('[wu] hot-reload failed for ' + appName + ', falling back', err);
+    \\          var container = document.getElementById('wu-app-' + appName);
+    \\          var def = wu.definitions && wu.definitions.get(appName);
+    \\          if (def && def.mount && container) {
+    \\            container.innerHTML = '';
+    \\            def.mount(container);
+    \\          } else {
+    \\            location.reload();
+    \\          }
+    \\        });
+    \\    } else {
+    \\      var container = document.getElementById('wu-app-' + appName);
+    \\      var oldDef = wu.definitions && wu.definitions.get(appName);
+    \\      var oldUnmount = (oldDef && oldDef.unmount) ? oldDef.unmount : null;
+    \\      import(entry + '?t=' + Date.now()).then(function() {
+    \\        if (oldUnmount && container) {
+    \\          try { oldUnmount(container); } catch(e) {}
+    \\        }
+    \\        if (container) container.innerHTML = '';
+    \\        var newDef = wu.definitions && wu.definitions.get(appName);
+    \\        if (newDef && newDef.mount && container) {
+    \\          newDef.mount(container);
+    \\          console.log('%c[wu] ' + appName + ' hot-reloaded', 'color: #7c3aed');
+    \\        }
+    \\      }).catch(function(err) {
+    \\        console.warn('[wu] hot-reload failed for ' + appName, err);
+    \\        location.reload();
+    \\      });
     \\    }
-    \\    if (container) container.innerHTML = '';
-    \\    import(entry + '?t=' + Date.now()).then(function() {
-    \\      var newDef = wu.definitions && wu.definitions.get(appName);
-    \\      if (newDef && newDef.mount && container) {
-    \\        requestAnimationFrame(function() { newDef.mount(container); });
-    \\        console.log('%c[wu] ' + appName + ' hot-reloaded', 'color: #7c3aed');
-    \\      }
-    \\    }).catch(function(err) {
-    \\      console.warn('[wu] hot-reload failed for ' + appName, err);
-    \\      location.reload();
-    \\    });
     \\  }
     \\})();
 ;
+
+// ── Import Version Stamping (module cache busting) ─────────────────────────
+
+/// Append ?t=<version> to relative import specifiers to bust the browser's
+/// ES module cache. Without this, `import './App.jsx'` inside a hot-reloaded
+/// entry resolves to the same URL and the browser reuses the stale module.
+/// Only modifies relative imports (./  ../) that don't already have a query.
+fn versionRelativeImports(allocator: Allocator, source: []const u8, version: u64) ![]const u8 {
+    // No version yet → return original slice (no allocation)
+    if (version == 0) return source;
+
+    // Format version suffix once
+    var vbuf: [32]u8 = undefined;
+    const vsuffix = std.fmt.bufPrint(&vbuf, "?t={d}", .{version}) catch return source;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var src = source;
+    var pos: usize = 0;
+    var found_any = false;
+
+    while (pos < src.len) {
+        // Look for 'from' keyword: from './path' or from "../path"
+        if (pos + 4 < src.len and std.mem.eql(u8, src[pos .. pos + 4], "from")) {
+            if (pos == 0 or !std.ascii.isAlphanumeric(src[pos - 1])) {
+                if (tryStampImport(allocator, &out, src, pos + 4, vsuffix)) |rest| {
+                    src = rest;
+                    pos = 0;
+                    found_any = true;
+                    continue;
+                }
+            }
+        }
+
+        // Look for 'import' keyword: import './path' or import('./path')
+        if (pos + 6 < src.len and std.mem.eql(u8, src[pos .. pos + 6], "import")) {
+            if (pos == 0 or !std.ascii.isAlphanumeric(src[pos - 1])) {
+                var q = pos + 6;
+                while (q < src.len and (src[q] == ' ' or src[q] == '\t')) : (q += 1) {}
+
+                if (q < src.len and (src[q] == '"' or src[q] == '\'')) {
+                    // Static side-effect import: import './path'
+                    if (tryStampImport(allocator, &out, src, pos + 6, vsuffix)) |rest| {
+                        src = rest;
+                        pos = 0;
+                        found_any = true;
+                        continue;
+                    }
+                } else if (q < src.len and src[q] == '(') {
+                    // Dynamic import: import('./path')
+                    if (tryStampImport(allocator, &out, src, q + 1, vsuffix)) |rest| {
+                        src = rest;
+                        pos = 0;
+                        found_any = true;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        pos += 1;
+    }
+
+    if (!found_any) {
+        out.deinit(allocator);
+        return source; // No relative imports found — return original (no allocation)
+    }
+
+    try out.appendSlice(allocator, src);
+    return out.toOwnedSlice(allocator);
+}
+
+/// Helper: given a position after 'from'/'import'/import(, skip whitespace,
+/// find a quoted relative specifier without existing query, and stamp it.
+/// Returns remaining source after the specifier, or null if not applicable.
+fn tryStampImport(allocator: Allocator, out: *std.ArrayList(u8), src: []const u8, after: usize, vsuffix: []const u8) ?[]const u8 {
+    var q = after;
+    while (q < src.len and (src[q] == ' ' or src[q] == '\t')) : (q += 1) {}
+    if (q >= src.len) return null;
+    const quote = src[q];
+    if (quote != '"' and quote != '\'') return null;
+    const spec_start = q + 1;
+    const spec_end_rel = std.mem.indexOfScalar(u8, src[spec_start..], quote) orelse return null;
+    const specifier = src[spec_start .. spec_start + spec_end_rel];
+
+    // Only stamp relative imports without existing query params
+    if (!std.mem.startsWith(u8, specifier, "./") and !std.mem.startsWith(u8, specifier, "../")) return null;
+    if (std.mem.indexOfScalar(u8, specifier, '?') != null) return null;
+
+    // Emit everything up to end of specifier, then append version
+    out.appendSlice(allocator, src[0 .. spec_start + spec_end_rel]) catch return null;
+    out.appendSlice(allocator, vsuffix) catch return null;
+
+    return src[spec_start + spec_end_rel ..];
+}
 
 // ── Struct type for file watcher (must be at module scope) ──────────────────
 
 const WatchEntry = struct {
     hash: u64,
     mtime: i128,
+    generation: u32 = 0,
 };
 
 // ── URL Decoding ────────────────────────────────────────────────────────────

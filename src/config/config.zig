@@ -39,6 +39,10 @@ pub const WuConfig = struct {
     proxy: ProxyConfig = .{},
     from_file: bool = false,
 
+    // Owned memory for cleanup (set by loadConfig)
+    _json_buf: ?[]const u8 = null,
+    _apps_owned: bool = false,
+
     pub fn appCount(self: *const WuConfig) usize {
         return self.apps.len;
     }
@@ -46,32 +50,48 @@ pub const WuConfig = struct {
     pub fn totalPorts(self: *const WuConfig) usize {
         return self.apps.len + 1; // +1 for shell
     }
+
+    /// Free memory allocated by loadConfig.
+    pub fn deinit(self: *WuConfig, allocator: Allocator) void {
+        if (self._apps_owned and self.apps.len > 0) {
+            allocator.free(self.apps);
+            self.apps = &.{};
+            self._apps_owned = false;
+        }
+        if (self._json_buf) |buf| {
+            allocator.free(buf);
+            self._json_buf = null;
+        }
+    }
 };
 
 // ─── Config Loader ────────────────────────────────────────────────────────
 
 /// Load wu.config.json from CWD. Returns defaults if missing.
+/// Call deinit() to free allocated memory when done.
 pub fn loadConfig(allocator: Allocator) WuConfig {
-    // NOTE: contents is intentionally NOT freed — config strings are slices
-    // into this buffer and must remain valid for the lifetime of the process.
     const contents = std.fs.cwd().readFileAlloc(allocator, "wu.config.json", 256 * 1024) catch {
         return .{};
     };
 
-    return parseConfigJson(allocator, contents) catch .{};
+    var cfg = parseConfigJson(allocator, contents) catch .{};
+    cfg._json_buf = contents;
+    return cfg;
 }
 
 /// Load wu.config.json from a specific directory path.
+/// Call deinit() to free allocated memory when done.
 pub fn loadConfigFrom(allocator: Allocator, dir_path: []const u8) WuConfig {
     const path = std.fmt.allocPrint(allocator, "{s}/wu.config.json", .{dir_path}) catch return .{};
     defer allocator.free(path);
 
-    // NOTE: contents is intentionally NOT freed — config strings are slices into this buffer.
     const contents = std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024) catch {
         return .{};
     };
 
-    return parseConfigJson(allocator, contents) catch .{};
+    var cfg = parseConfigJson(allocator, contents) catch .{};
+    cfg._json_buf = contents;
+    return cfg;
 }
 
 /// Write config to wu.config.json in CWD.
@@ -203,6 +223,7 @@ fn parseConfigJson(allocator: Allocator, json: []const u8) !WuConfig {
     }
 
     cfg.apps = apps_list.toOwnedSlice(allocator) catch &.{};
+    cfg._apps_owned = cfg.apps.len > 0;
     return cfg;
 }
 

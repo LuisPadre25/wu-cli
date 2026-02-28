@@ -12,6 +12,7 @@ const builtin = @import("builtin");
 
 pub fn run(allocator: Allocator, _: *std.process.ArgIterator) !void {
     var cfg = config_mod.loadConfig(allocator);
+    defer cfg.deinit(allocator);
     if (!cfg.from_file) {
         cfg = discovery.discover(allocator);
     }
