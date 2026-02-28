@@ -16,7 +16,7 @@ Native Zig dev server and CLI toolkit for wu-framework microfrontend application
 - CSS-as-module imports (`import './style.css'` injects into DOM at runtime)
 - WebSocket (RFC 6455) + SSE-based HMR with 300ms file-watcher polling
 - HTTP keep-alive for connection reuse across requests
-- Interactive project scaffolding (`wu create`)
+- Interactive project scaffolding (`wu create`) and standalone dependency installer (`wu install`)
 - Auto-discovery of micro-apps from directory structure (no config required)
 - Framework support: React, Preact, Vue, Svelte, Solid, Lit, Angular, Vanilla JS
 
@@ -53,6 +53,7 @@ zig build
 | `wu build` | Build all micro-apps in parallel |
 | `wu create` | Interactive project scaffolding (name, frameworks, install) |
 | `wu add <framework> <name>` | Add a new micro-app to an existing project |
+| `wu install` | Generate merged package.json and install dependencies |
 | `wu info` | Show project configuration and status |
 | `wu serve` | Production server (coming soon) |
 

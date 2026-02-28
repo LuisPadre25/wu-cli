@@ -25,6 +25,7 @@ pub const info_cmd = @import("commands/info.zig");
 pub const create_cmd = @import("commands/create.zig");
 pub const add_cmd = @import("commands/add.zig");
 pub const serve_cmd = @import("commands/serve.zig");
+pub const install_cmd = @import("commands/install.zig");
 pub const proxy_server = @import("proxy/server.zig");
 pub const runtime = @import("runtime/dev_server.zig");
 pub const runtime_transform = @import("runtime/transform.zig");
@@ -60,6 +61,8 @@ pub fn main() !void {
         try add_cmd.run(allocator, &args);
     } else if (std.mem.eql(u8, command, "serve")) {
         try serve_cmd.run(allocator, &args);
+    } else if (std.mem.eql(u8, command, "install") or std.mem.eql(u8, command, "i")) {
+        try install_cmd.run(allocator, &args);
     } else if (std.mem.eql(u8, command, "info")) {
         try info_cmd.run(allocator);
     } else if (std.mem.eql(u8, command, "version") or
