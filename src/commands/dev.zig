@@ -34,6 +34,7 @@ pub fn run(allocator: Allocator, args: *std.process.ArgIterator) !void {
 
     // Load config or auto-discover
     var cfg = config_mod.loadConfig(allocator);
+    defer cfg.deinit(allocator);
     if (!cfg.from_file) {
         std.debug.print("  {s}No wu.config.json found. Scanning directory...{s}\n", .{
             ansi.yellow, ansi.reset,
@@ -65,12 +66,38 @@ fn runNativeMode(allocator: Allocator, cfg: config_mod.WuConfig, port: u16) !voi
     var app_entries: std.ArrayList(dev_server.AppEntry) = .empty;
     defer app_entries.deinit(allocator);
 
+    var skipped: usize = 0;
     for (cfg.apps) |app| {
+        // Skip apps whose directory no longer exists
+        std.fs.cwd().access(app.dir, .{}) catch {
+            std.debug.print("  {s}[skip]{s} {s}{s}{s} — directory '{s}' not found\n", .{
+                ansi.yellow, ansi.reset, ansi.bold, app.name, ansi.reset, app.dir,
+            });
+            skipped += 1;
+            continue;
+        };
+        // Skip duplicate directories
+        var dup = false;
+        for (app_entries.items) |existing| {
+            if (std.mem.eql(u8, existing.dir, app.dir)) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) {
+            skipped += 1;
+            continue;
+        }
         try app_entries.append(allocator, .{
             .name = app.name,
             .dir = app.dir,
             .framework = app.framework,
             .port = app.port,
+        });
+    }
+    if (skipped > 0) {
+        std.debug.print("  {s}({d} app(s) skipped — clean up wu.config.json to remove){s}\n\n", .{
+            ansi.dim, skipped, ansi.reset,
         });
     }
 
@@ -112,8 +139,10 @@ fn runViteMode(allocator: Allocator, cfg: config_mod.WuConfig) !void {
         });
     }
 
-    // Add each micro-app
+    // Add each micro-app (skip if directory missing)
     for (cfg.apps) |app| {
+        std.fs.cwd().access(app.dir, .{}) catch continue;
+
         var cmd_buf: [256]u8 = undefined;
         const cmd = std.fmt.bufPrint(&cmd_buf, "{s} --port {d}", .{
             app.dev_cmd, app.port,

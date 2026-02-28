@@ -28,7 +28,8 @@ pub const CompileError = error{
 pub fn needsCompile(ext: []const u8) bool {
     const eql = std.mem.eql;
     return eql(u8, ext, ".jsx") or eql(u8, ext, ".tsx") or
-        eql(u8, ext, ".svelte") or eql(u8, ext, ".vue");
+        eql(u8, ext, ".svelte") or eql(u8, ext, ".vue") or
+        eql(u8, ext, ".ts");
 }
 
 /// Compile a source file using the framework's own compiler.
@@ -54,6 +55,19 @@ pub fn compileFile(
         return daemonCompile(allocator, "vue", filename, "", "", source) catch
             compileVueFallback(allocator, source, file_path, app_dir);
     }
+    if (eql(u8, ext, ".ts")) {
+        if (eql(u8, framework, "angular")) {
+            // Angular needs full bundling (esbuild bundle) to resolve circular deps
+            // between @angular/compiler and @angular/core. Pass file directory as
+            // resolveDir so esbuild can find node_modules and local imports.
+            const file_dir = std.fs.path.dirname(file_path) orelse app_dir;
+            return daemonCompile(allocator, "angular-bundle", filename, "ts", file_dir, source) catch
+                compileJsxFallback(allocator, source, ext, app_dir, framework);
+        }
+        // Regular TypeScript files (decorators need esbuild transform)
+        return daemonCompile(allocator, "ts", filename, "ts", "", source) catch
+            compileJsxFallback(allocator, source, ext, app_dir, framework);
+    }
     if (eql(u8, ext, ".jsx") or eql(u8, ext, ".tsx")) {
         const is_tsx = eql(u8, ext, ".tsx");
         const loader = if (is_tsx) "tsx" else "jsx";
@@ -61,6 +75,12 @@ pub fn compileFile(
         // Solid needs babel-preset-solid → must use daemon/node
         if (eql(u8, framework, "solid")) {
             return daemonCompile(allocator, "solid", filename, loader, "", source) catch
+                compileJsxFallback(allocator, source, ext, app_dir, framework);
+        }
+
+        // Qwik needs its optimizer to transform $() into QRLs — type 'qwik'
+        if (eql(u8, framework, "qwik")) {
+            return daemonCompile(allocator, "qwik", filename, loader, "", source) catch
                 compileJsxFallback(allocator, source, ext, app_dir, framework);
         }
 
@@ -226,7 +246,9 @@ fn spawnDaemon(allocator: Allocator) bool {
 
 fn killDaemonLocked() void {
     if (g_daemon) |*d| {
-        d.stdin.close();
+        // Kill the child — don't manually close stdin because wait()
+        // calls cleanupStreams() which closes all pipes. Closing twice
+        // panics on Windows (CloseHandle asserts on invalid handle).
         _ = d.child.kill() catch {};
         _ = d.child.wait() catch {};
     }

@@ -12,6 +12,9 @@ const fs = require('fs');
 let buf = Buffer.alloc(0);
 let pending = null;
 
+// Qwik optimizer (lazy-initialized, cached)
+let qwikOptimizer = null;
+
 process.stdin.resume();
 process.stdin.on('data', chunk => {
   buf = Buffer.concat([buf, chunk]);
@@ -61,10 +64,38 @@ function compile(type, filename, loader, jsxSrc, source) {
       }
       code = sc + '\n' + tp + '\n';
       code += sc ? '__sfc__.render=render;\nexport default __sfc__;' : 'export default{render};';
+    } else if (type === 'qwik') {
+      // Qwik needs its optimizer to transform $() expressions into QRLs.
+      // createOptimizer() is async — handled in compileQwikAsync().
+      // Protocol is serial so async is safe (Zig blocks on stdout read).
+      compileQwikAsync(filename, source);
+      return;
     } else if (type === 'jsx' || type === 'tsx') {
       const o = { loader: loader || type, jsx: 'automatic', format: 'esm' };
       if (jsxSrc) o.jsxImportSource = jsxSrc;
       code = require('esbuild').transformSync(source, o).code;
+    } else if (type === 'ts') {
+      code = require('esbuild').transformSync(source, {
+        loader: 'ts', format: 'esm',
+        tsconfigRaw: '{"compilerOptions":{"experimentalDecorators":true,"emitDecoratorMetadata":false}}'
+      }).code;
+    } else if (type === 'angular-bundle') {
+      // Angular needs full bundling to resolve circular deps between
+      // @angular/compiler and @angular/core. jsxSrc = resolveDir (file directory).
+      const result = require('esbuild').buildSync({
+        stdin: {
+          contents: source,
+          resolveDir: jsxSrc || process.cwd(),
+          loader: 'ts',
+        },
+        bundle: true,
+        format: 'esm',
+        write: false,
+        platform: 'browser',
+        target: 'es2022',
+        tsconfigRaw: '{"compilerOptions":{"experimentalDecorators":true,"emitDecoratorMetadata":false}}',
+      });
+      code = result.outputFiles[0].text;
     } else if (type === 'solid') {
       code = require('@babel/core').transformSync(source, {
         presets: ['babel-preset-solid'], filename: 'x.' + (loader || 'jsx')
@@ -72,6 +103,30 @@ function compile(type, filename, loader, jsxSrc, source) {
     } else {
       throw new Error('Unknown type: ' + type);
     }
+    const cb = Buffer.from(code);
+    fs.writeSync(1, 'OK\t' + cb.length + '\n');
+    fs.writeSync(1, cb);
+  } catch (e) {
+    fs.writeSync(1, 'ERR\t' + (e.message || 'fail').replace(/[\r\n]/g, ' ') + '\n');
+  }
+}
+
+// Async Qwik compilation (optimizer init is async)
+async function compileQwikAsync(filename, source) {
+  try {
+    if (!qwikOptimizer) {
+      const { createOptimizer } = require('@builder.io/qwik/optimizer');
+      qwikOptimizer = await createOptimizer();
+    }
+    const result = qwikOptimizer.transformModulesSync({
+      input: [{ code: source, path: filename }],
+      srcDir: '/wu-dev',
+      entryStrategy: { type: 'inline' },
+      mode: 'dev',
+      transpileTs: true,
+      transpileJsx: true,
+    });
+    const code = result.modules[0].code;
     const cb = Buffer.from(code);
     fs.writeSync(1, 'OK\t' + cb.length + '\n');
     fs.writeSync(1, cb);

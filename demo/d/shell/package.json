@@ -1,7 +1,0 @@
-{
-  "name": "wu-shell",
-  "type": "module",
-  "dependencies": {
-    "wu-framework": "^1.1.17"
-  }
-}

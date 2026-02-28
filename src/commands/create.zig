@@ -16,10 +16,12 @@ const Allocator = std.mem.Allocator;
 const config_mod = @import("../config/config.zig");
 const ansi = @import("../util/ansi.zig");
 
-const fw_names = [_][]const u8{ "react", "vue", "svelte", "solid", "preact", "lit", "vanilla" };
-const fw_labels = [_][]const u8{ "React", "Vue", "Svelte", "Solid", "Preact", "Lit", "Vanilla" };
+// NOTE: "qwik" disabled — qwikloader's global event delegation is incompatible with Shadow DOM
+// (event.target retargeting breaks QRL resolution). See: https://github.com/QwikDev/qwik-evolution/issues/283
+const fw_names = [_][]const u8{ "react", "vue", "svelte", "solid", "preact", "lit", "vanilla", "angular", "alpine", "stencil", "htmx", "stimulus" };
+const fw_labels = [_][]const u8{ "React", "Vue", "Svelte", "Solid", "Preact", "Lit", "Vanilla", "Angular", "Alpine.js", "Stencil", "HTMX", "Stimulus" };
 
-const MicroApp = struct {
+pub const MicroApp = struct {
     name_buf: [64]u8 = undefined,
     name_len: usize = 0,
     framework: []const u8 = "react",
@@ -134,7 +136,7 @@ pub fn run(allocator: Allocator, args: *std.process.ArgIterator) !void {
             std.debug.print("  {s}{d}.{s}{s}{s}", .{ ansi.dim, i + 1, ansi.reset, color, label });
         }
         std.debug.print("{s}\n", .{ansi.reset});
-        std.debug.print("  {s}Choose [1-7]:{s} ", .{ ansi.dim, ansi.reset });
+        std.debug.print("  {s}Choose [1-13]:{s} ", .{ ansi.dim, ansi.reset });
 
         var choice_buf: [16]u8 = undefined;
         const choice_str = readLine(&stdin, &choice_buf) orelse break;
@@ -221,7 +223,7 @@ pub fn run(allocator: Allocator, args: *std.process.ArgIterator) !void {
 
 // ── Shell Generation ────────────────────────────────────────────────────────
 
-fn generateShell(allocator: Allocator, project: []const u8, apps: []MicroApp) !void {
+fn generateShell(_: Allocator, project: []const u8, _: []MicroApp) !void {
     var p: [512]u8 = undefined;
 
     const shell_dir = try std.fmt.bufPrint(&p, "{s}/shell", .{project});
@@ -240,12 +242,9 @@ fn generateShell(allocator: Allocator, project: []const u8, apps: []MicroApp) !v
         \\
     );
 
-    // ── index.html ──────────────────────────────────────────────────────
-    var html: std.ArrayList(u8) = .empty;
-    defer html.deinit(allocator);
-    const w = html.writer(allocator);
-
-    try w.writeAll(
+    // ── index.html — dynamic shell (no hardcoded apps) ──────────────────
+    const index_path = try std.fmt.bufPrint(&p, "{s}/shell/index.html", .{project});
+    try writeFile(index_path,
         \\<!DOCTYPE html>
         \\<html lang="en">
         \\<head>
@@ -255,8 +254,6 @@ fn generateShell(allocator: Allocator, project: []const u8, apps: []MicroApp) !v
         \\  <style>
         \\    * { margin: 0; padding: 0; box-sizing: border-box; }
         \\    body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e0e0e0; }
-        \\
-        \\    /* Sidebar */
         \\    nav { width: 240px; position: fixed; top: 0; left: 0; bottom: 0; background: #111; padding: 1.5rem 1rem; border-right: 1px solid #222; display: flex; flex-direction: column; }
         \\    .nav-brand { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 2rem; }
         \\    .nav-brand svg { width: 28px; height: 28px; }
@@ -267,13 +264,9 @@ fn generateShell(allocator: Allocator, project: []const u8, apps: []MicroApp) !v
         \\    nav button.active { background: #7c3aed18; color: #a78bfa; }
         \\    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
         \\    .nav-footer { margin-top: auto; padding-top: 1rem; border-top: 1px solid #222; font-size: 0.7rem; color: #444; text-align: center; }
-        \\
-        \\    /* Main content */
         \\    main { margin-left: 240px; min-height: 100vh; }
         \\    .section { display: none; min-height: 100vh; }
         \\    .section.active { display: block; }
-        \\
-        \\    /* Welcome */
         \\    .welcome { display: flex; align-items: center; justify-content: center; min-height: 100vh; text-align: center; }
         \\    .welcome h1 { font-size: 2.5rem; font-weight: 300; color: #fff; margin-bottom: 0.5rem; }
         \\    .welcome h1 strong { font-weight: 700; color: #a78bfa; }
@@ -286,63 +279,27 @@ fn generateShell(allocator: Allocator, project: []const u8, apps: []MicroApp) !v
         \\  </style>
         \\</head>
         \\<body>
-        \\  <nav>
+        \\  <nav id="wu-nav">
         \\    <div class="nav-brand">
-        \\      <svg viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        \\      <svg viewBox="0 0 100 100"><defs><linearGradient id="wuG" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c084fc"/><stop offset="100%" stop-color="#6366f1"/></linearGradient></defs><rect width="100" height="100" rx="22" fill="url(#wuG)"/><polyline points="18,30 33,72 50,32 67,72 82,30" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="78" cy="74" r="4.5" fill="#2dd4bf"/></svg>
         \\      <span>WU</span>
         \\    </div>
         \\    <button data-section="welcome" class="active"><div class="dot" style="background:#a78bfa"></div> Home</button>
         \\    <div class="nav-label">Micro-apps</div>
-        \\
-    );
-
-    // Nav buttons per app with framework color dots
-    for (apps) |*app| {
-        try w.print("    <button data-section=\"{s}\"><div class=\"dot\" style=\"background:{s}\"></div> {s}</button>\n", .{
-            app.name(), fwColor(app.framework), app.name(),
-        });
-    }
-
-    try w.print(
-        \\    <div class="nav-footer">{s} &middot; wu dev</div>
+        \\    <div id="wu-nav-apps"></div>
+        \\    <div class="nav-footer">wu dev</div>
         \\  </nav>
-        \\  <main>
+        \\  <main id="wu-main">
         \\    <div id="section-welcome" class="section active">
         \\      <div class="welcome">
         \\        <div>
+        \\          <svg viewBox="0 0 100 100" style="width:80px;height:80px;margin-bottom:1.5rem"><defs><linearGradient id="wuGL" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c084fc"/><stop offset="100%" stop-color="#6366f1"/></linearGradient></defs><rect width="100" height="100" rx="22" fill="url(#wuGL)"/><polyline points="18,30 33,72 50,32 67,72 82,30" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="78" cy="74" r="4.5" fill="#2dd4bf"/></svg>
         \\          <h1>Welcome to <strong>WU</strong></h1>
-        \\          <p>{d} micro-app(s) running on one port</p>
-        \\          <div class="app-grid">
-        \\
-    , .{ project, apps.len });
-
-    // App cards in welcome page
-    for (apps) |*app| {
-        try w.print(
-            \\            <div class="app-card" data-section="{s}">
-            \\              <div class="card-name">{s}</div>
-            \\              <div class="card-fw" style="color:{s}">{s}</div>
-            \\            </div>
-            \\
-        , .{ app.name(), app.name(), fwColor(app.framework), app.framework });
-    }
-
-    try w.writeAll(
-        \\          </div>
+        \\          <p id="wu-app-count"></p>
+        \\          <div class="app-grid" id="wu-app-grid"></div>
         \\        </div>
         \\      </div>
         \\    </div>
-        \\
-    );
-
-    // Section containers per app
-    for (apps) |*app| {
-        try w.print("    <div id=\"section-{s}\" class=\"section\">\n", .{app.name()});
-        try w.print("      <div id=\"wu-app-{s}\" data-wu-app=\"{s}\"></div>\n", .{ app.name(), app.name() });
-        try w.writeAll("    </div>\n");
-    }
-
-    try w.writeAll(
         \\  </main>
         \\  <script type="module" src="/shell/main.js"></script>
         \\</body>
@@ -350,72 +307,90 @@ fn generateShell(allocator: Allocator, project: []const u8, apps: []MicroApp) !v
         \\
     );
 
-    const index_path = try std.fmt.bufPrint(&p, "{s}/shell/index.html", .{project});
-    try writeFile(index_path, html.items);
-
-    // ── main.js ─────────────────────────────────────────────────────────
-    var js: std.ArrayList(u8) = .empty;
-    defer js.deinit(allocator);
-    const jw = js.writer(allocator);
-
-    // Import wu-framework core (CJS wrapper → module.exports; singleton lives in .default)
-    try jw.writeAll("import _wuPkg from 'wu-framework';\n");
-    try jw.writeAll("const wu = _wuPkg.default || _wuPkg;\n");
-    try jw.writeAll("if (typeof window !== 'undefined') window.wu = wu;\n\n");
-
-    // App entry points — loaded on-demand when user navigates (true lazy loading)
-    try jw.writeAll("// Entry points: loaded ONLY when user navigates to each section\n");
-    try jw.writeAll("const appEntries = {\n");
-    for (apps) |*app| {
-        var dir_buf: [256]u8 = undefined;
-        const dir = app.dirName(&dir_buf);
-        const ext = mainExt(app.framework);
-        try jw.print("  '{s}': '/{s}/src/main.{s}',\n", .{ app.name(), dir, ext });
-    }
-    try jw.writeAll("};\n");
-    try jw.writeAll("window.__wu_entries = appEntries;\n\n");
-
-    // Navigation with lazy load + mount
-    try jw.writeAll(
-        \\// Navigation — lazy load AND mount on first visit
+    // ── main.js — dynamic shell logic ───────────────────────────────────
+    const js_path = try std.fmt.bufPrint(&p, "{s}/shell/main.js", .{project});
+    try writeFile(js_path,
+        \\import _wuPkg from 'wu-framework';
+        \\const wu = _wuPkg.default || _wuPkg;
+        \\if (typeof window !== 'undefined') window.wu = wu;
+        \\
+        \\// App list injected by dev server into HTML as window.__wu_apps
+        \\const apps = window.__wu_apps || [];
+        \\const appEntries = {};
         \\const mounted = new Set();
         \\
-        \\window.switchSection = async function switchSection(name) {
+        \\// Initialize wu-framework with full mount pipeline (Shadow DOM, sandboxing, lifecycle)
+        \\const baseUrl = location.origin;
+        \\const initPromise = wu.init({
+        \\  apps: apps.map(a => ({ name: a.name, url: baseUrl + '/' + a.dir }))
+        \\}).then(() => {
+        \\  console.log('%c[wu] Framework initialized — full mount pipeline active', 'color: #a78bfa; font-weight: bold');
+        \\}).catch(err => {
+        \\  console.warn('[wu] init failed, falling back to direct mount', err);
+        \\});
+        \\
+        \\async function switchSection(name) {
         \\  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
         \\  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
         \\  const el = document.getElementById('section-' + name);
-        \\  const btn = document.querySelector(`button[data-section="${name}"]`);
+        \\  const btn = document.querySelector('button[data-section="' + name + '"]');
         \\  if (el) el.classList.add('active');
         \\  if (btn) btn.classList.add('active');
         \\
-        \\  // Lazy load + mount: first visit loads the app code, then mounts
         \\  if (name !== 'welcome' && !mounted.has(name)) {
         \\    mounted.add(name);
         \\    const entry = appEntries[name];
         \\    if (entry) await import(entry);
-        \\    const container = document.getElementById('wu-app-' + name);
-        \\    const tryMount = () => {
-        \\      const def = wu.definitions.get(name);
-        \\      if (def && container) { def.mount(container); return true; }
-        \\      return false;
-        \\    };
-        \\    if (!tryMount()) {
-        \\      const h = setInterval(() => { if (tryMount()) clearInterval(h); }, 50);
-        \\      setTimeout(() => clearInterval(h), 5000);
+        \\    await initPromise;
+        \\    const selector = '#wu-app-' + name;
+        \\    try {
+        \\      await wu.mount(name, selector);
+        \\      console.log('%c[wu] ' + name + ' mounted via full pipeline', 'color: #a78bfa');
+        \\    } catch (err) {
+        \\      console.warn('[wu] wu.mount() failed for ' + name + ', falling back to direct mount', err);
+        \\      const container = document.querySelector(selector);
+        \\      const def = wu.definitions && wu.definitions.get(name);
+        \\      if (def && container) def.mount(container);
         \\    }
         \\  }
         \\}
+        \\window.switchSection = switchSection;
         \\
-        \\document.querySelectorAll('[data-section]').forEach(el => {
-        \\  el.addEventListener('click', () => switchSection(el.dataset.section));
+        \\const navContainer = document.getElementById('wu-nav-apps');
+        \\const grid = document.getElementById('wu-app-grid');
+        \\const main = document.getElementById('wu-main');
+        \\
+        \\apps.forEach(app => {
+        \\  appEntries[app.name] = '/' + app.dir + '/src/main.' + app.ext;
+        \\
+        \\  const btn = document.createElement('button');
+        \\  btn.dataset.section = app.name;
+        \\  btn.innerHTML = '<div class="dot" style="background:' + app.color + '"></div> ' + app.name;
+        \\  btn.addEventListener('click', () => switchSection(app.name));
+        \\  navContainer.appendChild(btn);
+        \\
+        \\  const card = document.createElement('div');
+        \\  card.className = 'app-card';
+        \\  card.dataset.section = app.name;
+        \\  card.innerHTML = '<div class="card-name">' + app.name + '</div><div class="card-fw" style="color:' + app.color + '">' + app.framework + '</div>';
+        \\  card.addEventListener('click', () => switchSection(app.name));
+        \\  grid.appendChild(card);
+        \\
+        \\  const sec = document.createElement('div');
+        \\  sec.id = 'section-' + app.name;
+        \\  sec.className = 'section';
+        \\  sec.innerHTML = '<div id="wu-app-' + app.name + '" data-wu-app="' + app.name + '"></div>';
+        \\  main.appendChild(sec);
         \\});
         \\
-        \\console.log('%c[wu] Shell ready — apps load on demand', 'color: #a78bfa; font-weight: bold');
+        \\document.getElementById('wu-app-count').textContent = apps.length + ' micro-app(s) running on one port';
+        \\window.__wu_entries = appEntries;
+        \\
+        \\document.querySelector('button[data-section="welcome"]').addEventListener('click', () => switchSection('welcome'));
+        \\
+        \\console.log('%c[wu] Shell ready — ' + apps.length + ' apps loaded dynamically', 'color: #a78bfa; font-weight: bold');
         \\
     );
-
-    const js_path = try std.fmt.bufPrint(&p, "{s}/shell/main.js", .{project});
-    try writeFile(js_path, js.items);
 }
 
 fn fwColor(framework: []const u8) []const u8 {
@@ -427,12 +402,18 @@ fn fwColor(framework: []const u8) []const u8 {
     if (eql(u8, framework, "preact")) return "#673ab8";
     if (eql(u8, framework, "lit")) return "#325ccc";
     if (eql(u8, framework, "vanilla")) return "#f7df1e";
+    if (eql(u8, framework, "angular")) return "#dd0031";
+    if (eql(u8, framework, "alpine")) return "#77c1d2";
+    if (eql(u8, framework, "qwik")) return "#ac7ef4";
+    if (eql(u8, framework, "stencil")) return "#4c48ff";
+    if (eql(u8, framework, "htmx")) return "#3366cc";
+    if (eql(u8, framework, "stimulus")) return "#77e8b9";
     return "#888";
 }
 
 // ── App Generation ──────────────────────────────────────────────────────────
 
-fn generateApp(allocator: Allocator, project: []const u8, app: *MicroApp) !void {
+pub fn generateApp(allocator: Allocator, project: []const u8, app: *MicroApp) !void {
     var p: [512]u8 = undefined;
     var dir_buf: [256]u8 = undefined;
     const dir = app.dirName(&dir_buf);
@@ -473,15 +454,17 @@ fn generateApp(allocator: Allocator, project: []const u8, app: *MicroApp) !void 
 
 fn mainExt(framework: []const u8) []const u8 {
     const eql = std.mem.eql;
-    if (eql(u8, framework, "react") or eql(u8, framework, "solid") or eql(u8, framework, "preact")) return "jsx";
+    if (eql(u8, framework, "react") or eql(u8, framework, "solid") or eql(u8, framework, "preact") or eql(u8, framework, "qwik")) return "jsx";
+    if (eql(u8, framework, "angular")) return "ts";
     return "js";
 }
 
 fn appExt(framework: []const u8) []const u8 {
     const eql = std.mem.eql;
-    if (eql(u8, framework, "react") or eql(u8, framework, "solid") or eql(u8, framework, "preact")) return ".jsx";
+    if (eql(u8, framework, "react") or eql(u8, framework, "solid") or eql(u8, framework, "preact") or eql(u8, framework, "qwik")) return ".jsx";
     if (eql(u8, framework, "svelte")) return ".svelte";
     if (eql(u8, framework, "vue")) return ".vue";
+    if (eql(u8, framework, "angular")) return ".ts";
     return ".js";
 }
 
@@ -516,7 +499,18 @@ fn generateAppPackageJson(allocator: Allocator, project: []const u8, dir: []cons
         try w.writeAll(",\n    \"preact\": \"^10.25.0\"");
     } else if (eql(u8, app.framework, "lit")) {
         try w.writeAll(",\n    \"lit\": \"^3.2.0\"");
+    } else if (eql(u8, app.framework, "angular")) {
+        try w.writeAll(",\n    \"@angular/core\": \"^19.0.0\",\n    \"@angular/common\": \"^19.0.0\",\n    \"@angular/compiler\": \"^19.0.0\",\n    \"@angular/platform-browser\": \"^19.0.0\",\n    \"@angular/platform-browser-dynamic\": \"^19.0.0\",\n    \"rxjs\": \"^7.8.0\",\n    \"zone.js\": \"^0.15.0\"");
+    } else if (eql(u8, app.framework, "alpine")) {
+        try w.writeAll(",\n    \"alpinejs\": \"^3.14.0\"");
+    } else if (eql(u8, app.framework, "qwik")) {
+        try w.writeAll(",\n    \"@builder.io/qwik\": \"^1.12.0\"");
+    } else if (eql(u8, app.framework, "htmx")) {
+        try w.writeAll(",\n    \"htmx.org\": \"^2.0.0\"");
+    } else if (eql(u8, app.framework, "stimulus")) {
+        try w.writeAll(",\n    \"@hotwired/stimulus\": \"^3.2.0\"");
     }
+    // stencil: no runtime deps (compiles to vanilla Web Components)
 
     try w.writeAll("\n  },\n  \"devDependencies\": {\n    \"vite\": \"^6.0.0\"");
 
@@ -529,6 +523,10 @@ fn generateAppPackageJson(allocator: Allocator, project: []const u8, dir: []cons
         try w.writeAll(",\n    \"@sveltejs/vite-plugin-svelte\": \"^5.0.0\"");
     } else if (eql(u8, app.framework, "solid")) {
         try w.writeAll(",\n    \"vite-plugin-solid\": \"^2.11.0\",\n    \"babel-preset-solid\": \"^1.9.0\",\n    \"@babel/core\": \"^7.26.0\"");
+    } else if (eql(u8, app.framework, "angular")) {
+        try w.writeAll(",\n    \"@angular/compiler-cli\": \"^19.0.0\",\n    \"@analogjs/vite-plugin-angular\": \"^1.14.0\",\n    \"typescript\": \"^5.7.0\"");
+    } else if (eql(u8, app.framework, "stencil")) {
+        try w.writeAll(",\n    \"@stencil/core\": \"^4.22.0\"");
     }
 
     try w.writeAll("\n  }\n}\n");
@@ -564,6 +562,13 @@ fn generateViteConfig(allocator: Allocator, project: []const u8, dir: []const u8
             \\export default defineConfig({ plugins: [svelte()] });
             \\
         );
+    } else if (eql(u8, framework, "angular")) {
+        try writeFile(path,
+            \\import { defineConfig } from 'vite';
+            \\import angular from '@analogjs/vite-plugin-angular';
+            \\export default defineConfig({ plugins: [angular()] });
+            \\
+        );
     } else {
         try writeFile(path,
             \\import { defineConfig } from 'vite';
@@ -592,6 +597,18 @@ fn generateAppComponent(allocator: Allocator, project: []const u8, dir: []const 
         @embedFile("templates/solid.jsx")
     else if (eql(u8, app.framework, "lit"))
         @embedFile("templates/lit.js")
+    else if (eql(u8, app.framework, "angular"))
+        @embedFile("templates/angular.ts")
+    else if (eql(u8, app.framework, "alpine"))
+        @embedFile("templates/alpine.js")
+    else if (eql(u8, app.framework, "qwik"))
+        @embedFile("templates/qwik.jsx")
+    else if (eql(u8, app.framework, "stencil"))
+        @embedFile("templates/stencil.js")
+    else if (eql(u8, app.framework, "htmx"))
+        @embedFile("templates/htmx.js")
+    else if (eql(u8, app.framework, "stimulus"))
+        @embedFile("templates/stimulus.js")
     else
         @embedFile("templates/vanilla.js");
 
@@ -700,6 +717,62 @@ fn generateMainFile(allocator: Allocator, project: []const u8, dir: []const u8, 
             \\await wuLit.register('{s}', App);
             \\
         , .{app.name()});
+    } else if (eql(u8, app.framework, "angular")) {
+        try w.print(
+            \\import 'zone.js';
+            \\import '@angular/compiler';
+            \\import {{ createApplication }} from '@angular/platform-browser';
+            \\import {{ createComponent, provideZoneChangeDetection }} from '@angular/core';
+            \\import {{ wuAngular }} from 'wu-framework/adapters/angular';
+            \\import {{ AppComponent }} from './App.ts';
+            \\
+            \\wuAngular.registerStandalone('{s}', AppComponent, {{
+            \\  createApplication,
+            \\  createComponent,
+            \\  provideZoneChangeDetection,
+            \\}});
+            \\
+        , .{app.name()});
+    } else if (eql(u8, app.framework, "alpine")) {
+        try w.print(
+            \\import {{ wuAlpine }} from 'wu-framework/adapters/alpine';
+            \\import App from './App.js';
+            \\
+            \\await wuAlpine.register('{s}', App);
+            \\
+        , .{app.name()});
+    } else if (eql(u8, app.framework, "qwik")) {
+        try w.print(
+            \\import {{ wuQwik }} from 'wu-framework/adapters/qwik';
+            \\import App from './App.jsx';
+            \\
+            \\await wuQwik.register('{s}', App);
+            \\
+        , .{app.name()});
+    } else if (eql(u8, app.framework, "stencil")) {
+        try w.print(
+            \\import {{ wuStencil }} from 'wu-framework/adapters/stencil';
+            \\import './App.js';
+            \\
+            \\await wuStencil.register('{s}', 'wu-stencil-app');
+            \\
+        , .{app.name()});
+    } else if (eql(u8, app.framework, "htmx")) {
+        try w.print(
+            \\import {{ wuHtmx }} from 'wu-framework/adapters/htmx';
+            \\import App from './App.js';
+            \\
+            \\await wuHtmx.register('{s}', App);
+            \\
+        , .{app.name()});
+    } else if (eql(u8, app.framework, "stimulus")) {
+        try w.print(
+            \\import {{ wuStimulus }} from 'wu-framework/adapters/stimulus';
+            \\import App from './App.js';
+            \\
+            \\await wuStimulus.register('{s}', App);
+            \\
+        , .{app.name()});
     } else {
         // vanilla
         try w.print(
@@ -757,7 +830,11 @@ fn generateConfig(allocator: Allocator, project: []const u8, apps: []MicroApp) !
     try config_mod.writeConfigTo(allocator, &cfg, project);
 }
 
-fn generateRootPackageJson(allocator: Allocator, project: []const u8, apps: []MicroApp) !void {
+pub fn generateRootPackageJson(allocator: Allocator, project_dir: []const u8, apps: []MicroApp) !void {
+    try generateRootPackageJsonNamed(allocator, project_dir, project_dir, apps);
+}
+
+pub fn generateRootPackageJsonNamed(allocator: Allocator, project_dir: []const u8, project_name: []const u8, apps: []MicroApp) !void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     const w = buf.writer(allocator);
@@ -774,7 +851,7 @@ fn generateRootPackageJson(allocator: Allocator, project: []const u8, apps: []Mi
 
     try w.writeAll("{\n");
     try w.print("  \"_wu\": \"auto-generated from app package.json files\",\n", .{});
-    try w.print("  \"name\": \"{s}\",\n", .{project});
+    try w.print("  \"name\": \"{s}\",\n", .{project_name});
     try w.writeAll("  \"private\": true,\n");
     try w.writeAll("  \"scripts\": {\n    \"dev\": \"wu dev\",\n    \"build\": \"wu build\"\n  },\n");
 
@@ -787,6 +864,11 @@ fn generateRootPackageJson(allocator: Allocator, project: []const u8, apps: []Mi
     var has_solid = false;
     var has_preact = false;
     var has_lit = false;
+    var has_angular = false;
+    var has_alpine = false;
+    var has_qwik = false;
+    var has_htmx = false;
+    var has_stimulus = false;
 
     for (apps) |*app| {
         if (eql(u8, app.framework, "react") and !has_react) {
@@ -807,7 +889,23 @@ fn generateRootPackageJson(allocator: Allocator, project: []const u8, apps: []Mi
         } else if (eql(u8, app.framework, "lit") and !has_lit) {
             try w.writeAll(",\n    \"lit\": \"^3.2.0\"");
             has_lit = true;
+        } else if (eql(u8, app.framework, "angular") and !has_angular) {
+            try w.writeAll(",\n    \"@angular/core\": \"^19.0.0\",\n    \"@angular/common\": \"^19.0.0\",\n    \"@angular/compiler\": \"^19.0.0\",\n    \"@angular/platform-browser\": \"^19.0.0\",\n    \"@angular/platform-browser-dynamic\": \"^19.0.0\",\n    \"rxjs\": \"^7.8.0\",\n    \"zone.js\": \"^0.15.0\"");
+            has_angular = true;
+        } else if (eql(u8, app.framework, "alpine") and !has_alpine) {
+            try w.writeAll(",\n    \"alpinejs\": \"^3.14.0\"");
+            has_alpine = true;
+        } else if (eql(u8, app.framework, "qwik") and !has_qwik) {
+            try w.writeAll(",\n    \"@builder.io/qwik\": \"^1.12.0\"");
+            has_qwik = true;
+        } else if (eql(u8, app.framework, "htmx") and !has_htmx) {
+            try w.writeAll(",\n    \"htmx.org\": \"^2.0.0\"");
+            has_htmx = true;
+        } else if (eql(u8, app.framework, "stimulus") and !has_stimulus) {
+            try w.writeAll(",\n    \"@hotwired/stimulus\": \"^3.2.0\"");
+            has_stimulus = true;
         }
+        // stencil: no runtime deps
     }
     try w.writeAll("\n  },\n");
 
@@ -818,6 +916,8 @@ fn generateRootPackageJson(allocator: Allocator, project: []const u8, apps: []Mi
     var has_vue_p = false;
     var has_svelte_p = false;
     var has_solid_p = false;
+    var has_angular_p = false;
+    var has_stencil_p = false;
 
     for (apps) |*app| {
         if (eql(u8, app.framework, "react") and !has_react_p) {
@@ -834,13 +934,21 @@ fn generateRootPackageJson(allocator: Allocator, project: []const u8, apps: []Mi
             try w.writeAll(",\n    \"babel-preset-solid\": \"^1.9.0\"");
             try w.writeAll(",\n    \"@babel/core\": \"^7.26.0\"");
             has_solid_p = true;
+        } else if (eql(u8, app.framework, "angular") and !has_angular_p) {
+            try w.writeAll(",\n    \"@angular/compiler-cli\": \"^19.0.0\"");
+            try w.writeAll(",\n    \"@analogjs/vite-plugin-angular\": \"^1.14.0\"");
+            try w.writeAll(",\n    \"typescript\": \"^5.7.0\"");
+            has_angular_p = true;
+        } else if (eql(u8, app.framework, "stencil") and !has_stencil_p) {
+            try w.writeAll(",\n    \"@stencil/core\": \"^4.22.0\"");
+            has_stencil_p = true;
         }
     }
 
     try w.writeAll("\n  }\n}\n");
 
     var p: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&p, "{s}/package.json", .{project});
+    const path = try std.fmt.bufPrint(&p, "{s}/package.json", .{project_dir});
     try writeFile(path, buf.items);
 }
 
@@ -854,7 +962,7 @@ fn installDeps(allocator: Allocator, project: []const u8, apps: []MicroApp) !voi
     runNpmInstall(allocator, project, project);
 }
 
-fn runNpmInstall(allocator: Allocator, cwd: []const u8, label: []const u8) void {
+pub fn runNpmInstall(allocator: Allocator, cwd: []const u8, label: []const u8) void {
     const argv = [_][]const u8{ "npm", "install", "--silent" };
     var child = std.process.Child.init(&argv, allocator);
     child.cwd = cwd;
